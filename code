@@ -20,7 +20,7 @@ CODE_PREFIX=$HOME/.local
 # please note, however, that using Microsoft's marketplace is
 # against their TOS. More info at:
 #   - https://github.com/VSCodium/vscodium/blob/master/DOCS.md#extensions--marketplace
-#   - https://github.com/VSCodium/vscodium/blob/master/DOCS.md#extensions--marketplace
+#   - https://github.com/cdr/code-server/blob/main/docs/FAQ.md#how-do-i-configure-the-marketplace-url
 SERVICE_URL=
 ITEM_URL=
 # This is your preferred port to use on your local computer to access code-server
