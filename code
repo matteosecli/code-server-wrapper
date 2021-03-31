@@ -1,0 +1,206 @@
+#!/usr/bin/env bash
+
+# Simple Bash script to assist running code-server on a remote host
+# (e.g. HPC cluster, etc).
+# Inspired by:
+#   - https://medium.com/@isaiah.taylor/use-vs-code-on-a-supercomputer-15e4cbbb1bc2
+#   - https://gist.github.com/isaiahtaylor/201929504151cc389b0b2454e5c29e36
+#
+# (C) 2021 Matteo Seclì <secli.matteo@gmail.com>
+
+
+# ============================================================================ #
+#                               SETTINGS GO HERE                               #
+# ============================================================================ #
+# This is the prefix of your code-server installation
+CODE_PREFIX=$HOME/.local
+# These are the marketplace endpoints.
+# Leave them empty to use code-server defaults.
+# It's possible to use e.g. open-vsx or Microsoft's marketplace;
+# please note, however, that using Microsoft's marketplace is
+# against their TOS. More info at:
+#   - https://github.com/VSCodium/vscodium/blob/master/DOCS.md#extensions--marketplace
+#   - https://github.com/VSCodium/vscodium/blob/master/DOCS.md#extensions--marketplace
+SERVICE_URL=
+ITEM_URL=
+# This is your preferred port to use on your local computer to access code-server
+LOCAL_PORT=8443
+# These are the lower/upper bounds for free ports to use for code-server
+PORT_LOW=8000
+PORT_UPP=9999
+
+
+# ============================================================================ #
+#     You typically don't need to touch the sections below; set your stuff     #
+#     in the "Settings" section above and then forget about it.
+# ============================================================================ #
+
+
+# ============================================================================ #
+#                                  EXIT TRAP                                   #
+# ============================================================================ #
+set -e
+function cleanup {
+    echo ""
+    echo "Cleaning up processes"
+    kill -SIGINT -$GID
+}
+trap cleanup EXIT
+
+
+# ============================================================================ #
+#                                SETTINGS CHECK                                #
+# ============================================================================ #
+# Default for $CODE_PREFIX
+if [ -z "$CODE_PREFIX" ]; then
+    CODE_PREFIX=$HOME/.local
+fi
+# Export $SERVICE_URL and $ITEM_URL if not empty
+if [ ! -z "$SERVICE_URL" ] && [ ! -z "$ITEM_URL" ]; then
+    export SERVICE_URL
+    export ITEM_URL
+fi
+# Default for $LOCAL_PORT
+if [ -z "$LOCAL_PORT" ]; then
+    LOCAL_PORT=8443
+fi
+# Default for $PORT_LOW
+if [ -z "$PORT_LOW" ]; then
+    PORT_LOW=8000
+fi
+# Default for $PORT_UPP
+if [ -z "$PORT_UPP" ]; then
+    PORT_UPP=9999
+fi
+
+
+# ============================================================================ #
+#                                AUTO INSTALL                                  #
+# ============================================================================ #
+if [ ! -f "${CODE_PREFIX}/bin/code-server" ]; then
+    echo "Installation of code-server not found in ${CODE_PREFIX}!"
+    read -r -p "Do you want me to install it for you? [y/N] " response
+    case "$response" in
+        [yY][eE][sS]|[yY])
+            curl -fsSL https://code-server.dev/install.sh | sh -s -- --method standalone --prefix "$CODE_PREFIX"
+            ;;
+        *)
+            echo "Cannot start code-server. Exiting..."
+            exit 1
+            ;;
+    esac
+fi
+
+
+# ============================================================================ #
+#                                LAUNCH SERVER                                 #
+# ============================================================================ #
+
+# Move to specified directory
+if [ "$1" ]; then
+    cd $1
+fi
+
+# Print header
+echo -n \
+"==================== CODE SERVER ====================
+Scanning for a free port to use... "
+
+# Find free port
+ipnip="$(hostname)"
+PORT_LOW=8000
+PORT_UPP=9999
+for (( ipnport=PORT_LOW ; ipnport <= PORT_UPP ; ++ipnport )); do
+    nc -z $ipnip $ipnport 2>/dev/null || break
+done
+if (( ipnport == PORT_UPP+1 )); then
+    echo -e "\nError! Could not find a free port to use."
+    exit 2
+else
+    echo -e "found free port $ipnport\n"
+fi
+
+# Create logfile
+ipntmpdir=$(mktemp -d)
+ipnlogname="${ipntmpdir}/code-server-$ipnport-$(date +%H.%M.%S).log"
+touch $ipnlogname
+
+# Print info
+echo \
+"Starting server so you can run VS Code in the browser.
+Logging to: $ipnlogname
+"
+
+# Launch code-server
+nohup ${CODE_PREFIX}/bin/code-server --bind-addr ${ipnip}:${ipnport} > $ipnlogname 2>&1 &
+
+# Get PID of code-server
+GID=$$
+
+# Print instructions
+echo -n \
+"To access this VS Code instance in your browser, please run
+this command in a shell on your local machine:
+
+  ssh -NL 8443:${ipnip}:${ipnport} $USER@${ipnip}
+
+Then, you can access VS Code from your browser:
+
+  http://localhost:8443
+
+Tips:
+  - If ${ipnip} is configured in ~/.ssh/config, you
+    can replace the \"$USER@${ipnip}\" at the end
+    with your custom alias, but leave the piece
+    \"8443:${ipnip}:${ipnport}\" unchanged.
+    This is useful if e.g. you use a jump host.
+  - Replace \"-NL\" with \"-fNL\" if you want to
+    run the command in background.
+  - You can replace the localhost port (8443) with
+    whathever port you like by editing this script.
+  - You can launch \"code\" in a \"screen\" session
+    to avoid keep a terminal open.
+
+Getting your password..." 
+
+# Initialize password
+ipnpass=
+
+# Loop until code-server says it's using a password
+while [[ -z "$ipnpass" ]]; do
+    sleep 1
+    echo -n .
+    set +e
+    # Possibly pipe another " | xargs" afted "sed" to remove trailing spaces
+    ipnpass="$(grep -oE 'Using password from.+\w+' $ipnlogname | sed 's/Using password from//g')"
+    if [[ ! -z "$(grep -oE 'error timed out' $ipnlogname)" ]]; then
+        echo -e "\n\e[1mError! code-server has timed out; please try again.\e[0m"
+        exit 3
+    fi
+done
+set -e
+
+# Turn '~' into $HOME
+ipnpass="${ipnpass//\~/$HOME}"
+# Alternative that doesn't depend on Bash extensions:
+#ipnpass="$(eval echo $ipnpass)"
+
+# Extract password
+#ipnpass="$(grep -oE 'password:.+\w+' $HOME/.config/code-server/config.yaml)"
+ipnpass="$(grep -oE 'password:.+\w+' $ipnpass)"
+
+# Print passowrd and stop instructions
+echo -e "
+Here is your password to access the session:
+
+  \e[1m${ipnpass}\e[0m
+
+Please enter it when prompted.
+
+When you are finished using VS Code in your browser,
+please kill this script using Ctrl-C.
+
+==================== CODE SERVER ===================="
+
+# Wait for Ctrl-C
+read -r -d '' _ </dev/tty
